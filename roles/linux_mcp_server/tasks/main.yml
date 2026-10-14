@@ -1,0 +1,272 @@
+---
+# Installs the MCP server for RHEL (linux-mcp-server) and wires it into goose
+# for root and every interactive user on the host.
+#
+# Prerequisite: run the goose_redhat role (site.yml) first — the extension
+# wiring needs each user's ~/.config/goose/config.yaml.
+
+- name: Assert the target is a supported RHEL release on a supported architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'RedHat'
+      - ansible_facts['distribution_major_version'] | int in linux_mcp_server_supported_el_versions
+      - ansible_facts['architecture'] in linux_mcp_server_supported_arches
+    fail_msg: >-
+      {{ inventory_hostname }} reports {{ ansible_facts['distribution'] }}
+      {{ ansible_facts['distribution_version'] }} ({{ ansible_facts['architecture'] }}).
+      The MCP server for RHEL targets RHEL 9.8+ and 10.2+ on x86_64 or aarch64.
+    quiet: true
+
+- name: Install the Python packages needed to bootstrap uv
+  ansible.builtin.dnf:
+    name: "{{ linux_mcp_server_packages }}"
+    state: present
+
+- name: Install uv system-wide
+  ansible.builtin.pip:
+    name: uv
+    executable: pip3
+
+- name: Resolve the uv executable path
+  ansible.builtin.command:
+    cmd: bash -lc "command -v uv"
+  changed_when: false
+  failed_when: false
+  register: linux_mcp_server_uv_path
+
+- name: Assert uv was found after installation
+  ansible.builtin.assert:
+    that:
+      - linux_mcp_server_uv_path.stdout | trim | length > 0
+    fail_msg: >-
+      uv was not found on the PATH of {{ inventory_hostname }} after
+      installation; check the pip3 install output.
+    quiet: true
+
+- name: Read the local user database
+  ansible.builtin.getent:
+    database: passwd
+    split: ":"
+
+- name: Validate explicitly configured users exist on the host
+  ansible.builtin.assert:
+    that:
+      - linux_mcp_server_seed_users | difference(getent_passwd.keys()) | length == 0
+    fail_msg: >-
+      These linux_mcp_server_seed_users were not found on {{ inventory_hostname }}:
+      {{ linux_mcp_server_seed_users | difference(getent_passwd.keys()) | list }}
+  when: linux_mcp_server_seed_users | length > 0
+
+- name: Build the list of users that should get the MCP server
+  ansible.builtin.set_fact:
+    linux_mcp_server_users: >-
+      {%- set users = [] -%}
+      {%- if linux_mcp_server_seed_users | length > 0 -%}
+        {%- for name in linux_mcp_server_seed_users -%}
+          {%- set info = getent_passwd[name] -%}
+          {%- set _ = users.append({'name': name, 'home': info[4]}) -%}
+        {%- endfor -%}
+      {%- else -%}
+        {%- for name, info in getent_passwd.items() -%}
+          {%- set uid = info[1] | int -%}
+          {%- if (uid == 0 and linux_mcp_server_seed_root)
+              or (uid >= linux_mcp_server_min_uid
+                  and info[5] in linux_mcp_server_allowed_shells) -%}
+            {%- set _ = users.append({'name': name, 'home': info[4]}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ users | sort(attribute='name') | unique }}
+
+- name: Check which target users already have the MCP server
+  ansible.builtin.stat:
+    path: "{{ item.home }}/{{ linux_mcp_server_bin_dir }}/linux-mcp-server"
+  loop: "{{ linux_mcp_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: linux_mcp_server_binary_checks
+
+- name: Collect users that already have the MCP server
+  ansible.builtin.set_fact:
+    linux_mcp_server_existing_users: >-
+      {{ linux_mcp_server_users
+         | zip(linux_mcp_server_binary_checks.results)
+         | selectattr('1.stat.exists', 'equalto', true)
+         | map('first')
+         | list }}
+
+- name: Collect users that still need the MCP server installed
+  ansible.builtin.set_fact:
+    linux_mcp_server_pending_users: >-
+      {{ linux_mcp_server_users
+         | zip(linux_mcp_server_binary_checks.results)
+         | rejectattr('1.stat.exists', 'equalto', true)
+         | map('first')
+         | list }}
+
+- name: Install the MCP server for each remaining user
+  ansible.builtin.command:
+    cmd: "{{ linux_mcp_server_uv_path.stdout | trim }} tool install {{ linux_mcp_server_package | quote }}"
+  become: true
+  become_user: "{{ item.name }}"
+  become_flags: "-H -n"
+  environment:
+    HOME: "{{ item.home }}"
+  loop: "{{ linux_mcp_server_pending_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+
+- name: Verify the MCP server runs for every target user
+  ansible.builtin.command:
+    cmd: "{{ item.home }}/{{ linux_mcp_server_bin_dir }}/linux-mcp-server --version"
+  become: true
+  become_user: "{{ item.name }}"
+  become_flags: "-H -n"
+  environment:
+    HOME: "{{ item.home }}"
+  loop: "{{ linux_mcp_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Check which target users have a goose configuration
+  ansible.builtin.stat:
+    path: "{{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}"
+  loop: "{{ linux_mcp_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: linux_mcp_server_goose_config_checks
+
+- name: Collect users with a goose configuration
+  ansible.builtin.set_fact:
+    linux_mcp_server_goose_users: >-
+      {{ linux_mcp_server_users
+         | zip(linux_mcp_server_goose_config_checks.results)
+         | selectattr('1.stat.exists', 'equalto', true)
+         | map('first')
+         | list }}
+
+- name: Collect users without a goose configuration
+  ansible.builtin.set_fact:
+    linux_mcp_server_missing_config_users: >-
+      {{ linux_mcp_server_users
+         | zip(linux_mcp_server_goose_config_checks.results)
+         | rejectattr('1.stat.exists', 'equalto', true)
+         | map('first')
+         | list }}
+
+- name: Warn when the goose configuration is missing for some users
+  ansible.builtin.debug:
+    msg: >-
+      No ~/.config/goose/config.yaml for:
+      {{ linux_mcp_server_missing_config_users | map(attribute='name') | list }}.
+      Run the goose-redhat playbook (site.yml) first — these users will get
+      the extension the next time this playbook runs.
+  when: linux_mcp_server_missing_config_users | length > 0
+
+- name: Check which goose configurations already have the extension
+  ansible.builtin.command:
+    cmd: grep -q {{ linux_mcp_server_goose_extension | quote }} {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
+  loop: "{{ linux_mcp_server_goose_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false
+  register: linux_mcp_server_extension_checks
+
+- name: Collect users whose goose config already has the extension
+  ansible.builtin.set_fact:
+    linux_mcp_server_extension_done_users: >-
+      {{ linux_mcp_server_goose_users
+         | zip(linux_mcp_server_extension_checks.results)
+         | selectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Collect users whose goose config still needs the extension
+  ansible.builtin.set_fact:
+    linux_mcp_server_extension_pending_users: >-
+      {{ linux_mcp_server_goose_users
+         | zip(linux_mcp_server_extension_checks.results)
+         | rejectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Check for an existing unmanaged extensions section
+  ansible.builtin.command:
+    cmd: grep -qE '^extensions:' {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
+  loop: "{{ linux_mcp_server_extension_pending_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false
+  register: linux_mcp_server_section_checks
+
+- name: Collect users with an unmanaged extensions section
+  ansible.builtin.set_fact:
+    linux_mcp_server_conflict_users: >-
+      {{ linux_mcp_server_extension_pending_users
+         | zip(linux_mcp_server_section_checks.results)
+         | selectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Collect users whose config can be extended safely
+  ansible.builtin.set_fact:
+    linux_mcp_server_append_users: >-
+      {{ linux_mcp_server_extension_pending_users
+         | zip(linux_mcp_server_section_checks.results)
+         | rejectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Warn when a goose config has an unmanaged extensions section
+  ansible.builtin.debug:
+    msg: >-
+      {{ linux_mcp_server_conflict_users | map(attribute='name') | list }} already
+      has an `extensions:` section in ~/.config/goose/config.yaml. Add the
+      {{ linux_mcp_server_goose_extension }} entry manually or remove the existing
+      section and re-run.
+  when: linux_mcp_server_conflict_users | length > 0
+
+- name: Build the goose extension environment mapping
+  ansible.builtin.set_fact:
+    linux_mcp_server_extension_envs: >-
+      {{ {}
+          if linux_mcp_server_allowed_log_paths | length == 0
+          else {'LINUX_MCP_ALLOWED_LOG_PATHS': linux_mcp_server_allowed_log_paths} }}
+
+- name: Add the MCP server extension to goose for each remaining user
+  ansible.builtin.blockinfile:
+    path: "{{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}"
+    marker: "# {mark} ansible managed: {{ linux_mcp_server_goose_extension }}"
+    block: |
+      extensions:
+        {{ linux_mcp_server_goose_extension }}:
+          enabled: true
+          type: stdio
+          name: {{ linux_mcp_server_goose_extension }}
+          description: {{ linux_mcp_server_goose_description | to_json }}
+          cmd: {{ item.home }}/{{ linux_mcp_server_bin_dir }}/linux-mcp-server
+          envs: {{ linux_mcp_server_extension_envs | to_json }}
+          env_keys:
+            - LINUX_MCP_KEY_PASSPHRASE
+            - LINUX_MCP_USER
+          timeout: {{ linux_mcp_server_goose_timeout }}
+          bundled: null
+          available_tools: []
+          args: []
+  loop: "{{ linux_mcp_server_append_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Summarize MCP server availability on the host
+  ansible.builtin.debug:
+    msg:
+      - "Server installed during this run: {{ linux_mcp_server_pending_users | map(attribute='name') | list }}"
+      - "Server already present: {{ linux_mcp_server_existing_users | map(attribute='name') | list }}"
+      - "Goose extension configured during this run: {{ linux_mcp_server_append_users | map(attribute='name') | list }}"
+      - "Goose extension already present: {{ linux_mcp_server_extension_done_users | map(attribute='name') | list }}"
+      - "Unmanaged extensions section, manual merge needed: {{ linux_mcp_server_conflict_users | map(attribute='name') | list }}"
+      - "No goose config (run the goose playbook first): {{ linux_mcp_server_missing_config_users | map(attribute='name') | list }}"

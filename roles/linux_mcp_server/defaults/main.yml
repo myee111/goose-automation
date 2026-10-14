@@ -1,0 +1,37 @@
+---
+# System packages needed to bootstrap uv (the path documented for the MCP
+# server for RHEL).
+linux_mcp_server_packages:
+  - python3
+  - python3-pip
+
+# PyPI package installed per user via `uv tool install`.
+linux_mcp_server_package: linux-mcp-server
+
+# Also set up root (uid 0).
+linux_mcp_server_seed_root: true
+
+# Interactive users are those with a UID >= this value and a login shell
+# listed in linux_mcp_server_allowed_shells. System accounts (nologin/false and
+# service UIDs below this value, other than root) are skipped.
+linux_mcp_server_min_uid: 1000
+
+linux_mcp_server_allowed_shells:
+  - /bin/bash
+  - /bin/sh
+  - /bin/zsh
+
+# Explicit list of users to set up. When non-empty, exactly these users
+# receive the MCP server and goose extension (they must exist on the host)
+# and interactive discovery is skipped.
+linux_mcp_server_seed_users: []
+
+# Goose extension settings, written to each user's ~/.config/goose/config.yaml.
+linux_mcp_server_goose_extension: linux-tools
+linux_mcp_server_goose_description: Linux system diagnostics
+linux_mcp_server_goose_timeout: 300
+
+# Optional allowlist of log file paths for the read_log_file tool,
+# comma-separated (e.g. "/var/log/messages,/var/log/secure"). Empty disables
+# the setting.
+linux_mcp_server_allowed_log_paths: ""

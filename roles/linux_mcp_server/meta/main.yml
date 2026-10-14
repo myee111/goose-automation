@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: goose-automation
+  description: >
+    Install the MCP server for RHEL (linux-mcp-server) and wire it into goose
+    for root and non-root users.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+
+dependencies: []

@@ -1,0 +1,15 @@
+---
+# Entry point: install the MCP server for RHEL (linux-mcp-server) and wire it
+# into goose for root and every interactive user on the target hosts.
+#
+#   ansible-playbook -i inventories/production/hosts.yml mcp_server.yml
+#
+# Run the goose-redhat playbook (site.yml) first — the extension wiring needs
+# each user's ~/.config/goose/config.yaml.
+
+- name: Install the MCP server for RHEL and configure goose
+  hosts: goose_hosts
+  become: true
+
+  roles:
+    - role: linux_mcp_server

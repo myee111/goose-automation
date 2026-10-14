@@ -1,0 +1,16 @@
+---
+# Internal implementation details for the linux_mcp_server role. Tune behavior
+# through the variables in defaults/main.yml instead of overriding these.
+
+# RHEL minor streams the MCP server for RHEL targets.
+linux_mcp_server_supported_el_versions: [9, 10]
+
+# Architectures the MCP server supports.
+linux_mcp_server_supported_arches: [x86_64, aarch64]
+
+# Where uv installs tool executables, relative to each user's home.
+linux_mcp_server_bin_dir: .local/bin
+
+# Where goose keeps per-user configuration.
+linux_mcp_server_goose_config_dir: .config/goose
+linux_mcp_server_goose_config_file: config.yaml
