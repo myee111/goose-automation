@@ -31,6 +31,12 @@ linux_mcp_server_goose_extension: linux-tools
 linux_mcp_server_goose_description: Linux system diagnostics
 linux_mcp_server_goose_timeout: 300
 
+# Environment variable names goose should fetch from its own config and pass
+# to the extension. Keep empty unless you configure values such as
+# LINUX_MCP_USER for SSH access — listing a name that has no value stops
+# goose from starting the extension.
+linux_mcp_server_goose_env_keys: []
+
 # Optional allowlist of log file paths for the read_log_file tool,
 # comma-separated (e.g. "/var/log/messages,/var/log/secure"). Empty disables
 # the setting.
