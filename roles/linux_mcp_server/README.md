@@ -7,7 +7,9 @@ wires it into goose for **root and every interactive user** on the host.
 
 1. Asserts the target runs RHEL 9 or 10 on x86_64 or aarch64.
 2. Installs `python3` and `python3-pip`, then `uv` system-wide (the path
-   documented for the MCP server for RHEL).
+   documented for the MCP server for RHEL). If pip drops the binary somewhere
+   only root can reach, it is copied to `/usr/local/bin` so every user can
+   run it.
 3. Runs `uv tool install linux-mcp-server` as each target user, giving each
    their own `~/.local/bin/linux-mcp-server`. uv manages its own Python, so
    RHEL 9's system Python is fine.

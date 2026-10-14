@@ -26,21 +26,61 @@
   ansible.builtin.pip:
     name: uv
     executable: pip3
+  register: linux_mcp_server_uv_install
 
-- name: Resolve the uv executable path
+- name: Look for the uv executable in the locations pip uses
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /usr/local/bin/uv
+    - /usr/bin/uv
+    - /usr/local/sbin/uv
+    - /root/.local/bin/uv
+    - /root/.cargo/bin/uv
+  register: linux_mcp_server_uv_locations
+
+- name: Fall back to the login-shell PATH
   ansible.builtin.command:
     cmd: bash -lc "command -v uv"
   changed_when: false
   failed_when: false
-  register: linux_mcp_server_uv_path
+  when: >-
+    linux_mcp_server_uv_locations.results
+    | selectattr('stat.exists', 'equalto', true) | list | length == 0
+  register: linux_mcp_server_uv_command
+
+- name: Determine the installed uv binary path
+  ansible.builtin.set_fact:
+    linux_mcp_server_uv_found: >-
+      {{ linux_mcp_server_uv_locations.results
+         | selectattr('stat.exists', 'equalto', true)
+         | selectattr('stat.executable', 'equalto', true)
+         | map(attribute='item')
+         | list | first
+         | default(linux_mcp_server_uv_command.stdout | default('') | trim) }}
+
+- name: Ensure uv is available to all users at /usr/local/bin
+  ansible.builtin.copy:
+    src: "{{ linux_mcp_server_uv_found }}"
+    dest: /usr/local/bin/uv
+    mode: "0755"
+    remote_src: true
+  when:
+    - linux_mcp_server_uv_found | length > 0
+    - linux_mcp_server_uv_found != '/usr/local/bin/uv'
+
+- name: Record the uv executable path
+  ansible.builtin.set_fact:
+    linux_mcp_server_uv_path: "{{ '/usr/local/bin/uv' if linux_mcp_server_uv_found | length > 0 else '' }}"
 
 - name: Assert uv was found after installation
   ansible.builtin.assert:
     that:
-      - linux_mcp_server_uv_path.stdout | trim | length > 0
+      - linux_mcp_server_uv_path | length > 0
     fail_msg: >-
-      uv was not found on the PATH of {{ inventory_hostname }} after
-      installation; check the pip3 install output.
+      uv was not found on {{ inventory_hostname }} after 'pip3 install uv'.
+      Check the 'Install uv system-wide' task output earlier in this run, or
+      locate the binary with `python3 -m pip show -f uv` and re-run.
     quiet: true
 
 - name: Read the local user database
@@ -106,7 +146,7 @@
 
 - name: Install the MCP server for each remaining user
   ansible.builtin.command:
-    cmd: "{{ linux_mcp_server_uv_path.stdout | trim }} tool install {{ linux_mcp_server_package | quote }}"
+    cmd: "{{ linux_mcp_server_uv_path }} tool install {{ linux_mcp_server_package | quote }}"
   become: true
   become_user: "{{ item.name }}"
   become_flags: "-H -n"
