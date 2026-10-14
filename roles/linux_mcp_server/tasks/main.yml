@@ -205,9 +205,11 @@
       the extension the next time this playbook runs.
   when: linux_mcp_server_missing_config_users | length > 0
 
-- name: Check which goose configurations already have the extension
+- name: Check which goose configurations already enable the extension
   ansible.builtin.command:
-    cmd: grep -q {{ linux_mcp_server_goose_extension | quote }} {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
+    cmd: >-
+      grep -qE '^[[:space:]]*{{ linux_mcp_server_goose_extension | regex_escape }}:'
+      {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
   loop: "{{ linux_mcp_server_goose_users }}"
   loop_control:
     label: "{{ item.name }}"
@@ -215,7 +217,7 @@
   failed_when: false
   register: linux_mcp_server_extension_checks
 
-- name: Collect users whose goose config already has the extension
+- name: Collect users whose goose config already enables the extension
   ansible.builtin.set_fact:
     linux_mcp_server_extension_done_users: >-
       {{ linux_mcp_server_goose_users
@@ -233,9 +235,11 @@
          | map('first')
          | list }}
 
-- name: Check for an existing unmanaged extensions section
+- name: Check which goose configs already have an extensions section
   ansible.builtin.command:
-    cmd: grep -qE '^extensions:' {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
+    cmd: >-
+      grep -qE '^extensions:'
+      {{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}
   loop: "{{ linux_mcp_server_extension_pending_users }}"
   loop_control:
     label: "{{ item.name }}"
@@ -243,32 +247,23 @@
   failed_when: false
   register: linux_mcp_server_section_checks
 
-- name: Collect users with an unmanaged extensions section
+- name: Collect users with an existing extensions section
   ansible.builtin.set_fact:
-    linux_mcp_server_conflict_users: >-
+    linux_mcp_server_section_users: >-
       {{ linux_mcp_server_extension_pending_users
          | zip(linux_mcp_server_section_checks.results)
          | selectattr('1.rc', 'equalto', 0)
          | map('first')
          | list }}
 
-- name: Collect users whose config can be extended safely
+- name: Collect users without an extensions section
   ansible.builtin.set_fact:
-    linux_mcp_server_append_users: >-
+    linux_mcp_server_no_section_users: >-
       {{ linux_mcp_server_extension_pending_users
          | zip(linux_mcp_server_section_checks.results)
          | rejectattr('1.rc', 'equalto', 0)
          | map('first')
          | list }}
-
-- name: Warn when a goose config has an unmanaged extensions section
-  ansible.builtin.debug:
-    msg: >-
-      {{ linux_mcp_server_conflict_users | map(attribute='name') | list }} already
-      has an `extensions:` section in ~/.config/goose/config.yaml. Add the
-      {{ linux_mcp_server_goose_extension }} entry manually or remove the existing
-      section and re-run.
-  when: linux_mcp_server_conflict_users | length > 0
 
 - name: Build the goose extension environment mapping
   ansible.builtin.set_fact:
@@ -277,7 +272,32 @@
           if linux_mcp_server_allowed_log_paths | length == 0
           else {'LINUX_MCP_ALLOWED_LOG_PATHS': linux_mcp_server_allowed_log_paths} }}
 
-- name: Add the MCP server extension to goose for each remaining user
+- name: Add the extension inside an existing goose extensions section
+  ansible.builtin.blockinfile:
+    path: "{{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}"
+    marker: "# {mark} ansible managed: {{ linux_mcp_server_goose_extension }}"
+    insertafter: '^extensions:'
+    block: |
+      # Managed by the linux_mcp_server ansible role.
+        {{ linux_mcp_server_goose_extension }}:
+          enabled: true
+          type: stdio
+          name: {{ linux_mcp_server_goose_extension }}
+          description: {{ linux_mcp_server_goose_description | to_json }}
+          cmd: {{ item.home }}/{{ linux_mcp_server_bin_dir }}/linux-mcp-server
+          envs: {{ linux_mcp_server_extension_envs | to_json }}
+          env_keys:
+            - LINUX_MCP_KEY_PASSPHRASE
+            - LINUX_MCP_USER
+          timeout: {{ linux_mcp_server_goose_timeout }}
+          bundled: null
+          available_tools: []
+          args: []
+  loop: "{{ linux_mcp_server_section_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create the extensions section with the MCP server extension
   ansible.builtin.blockinfile:
     path: "{{ item.home }}/{{ linux_mcp_server_goose_config_dir }}/{{ linux_mcp_server_goose_config_file }}"
     marker: "# {mark} ansible managed: {{ linux_mcp_server_goose_extension }}"
@@ -297,7 +317,7 @@
           bundled: null
           available_tools: []
           args: []
-  loop: "{{ linux_mcp_server_append_users }}"
+  loop: "{{ linux_mcp_server_no_section_users }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -306,7 +326,6 @@
     msg:
       - "Server installed during this run: {{ linux_mcp_server_pending_users | map(attribute='name') | list }}"
       - "Server already present: {{ linux_mcp_server_existing_users | map(attribute='name') | list }}"
-      - "Goose extension configured during this run: {{ linux_mcp_server_append_users | map(attribute='name') | list }}"
-      - "Goose extension already present: {{ linux_mcp_server_extension_done_users | map(attribute='name') | list }}"
-      - "Unmanaged extensions section, manual merge needed: {{ linux_mcp_server_conflict_users | map(attribute='name') | list }}"
+      - "Goose extension configured during this run: {{ (linux_mcp_server_section_users + linux_mcp_server_no_section_users) | map(attribute='name') | list }}"
+      - "Goose extension already enabled: {{ linux_mcp_server_extension_done_users | map(attribute='name') | list }}"
       - "No goose config (run the goose playbook first): {{ linux_mcp_server_missing_config_users | map(attribute='name') | list }}"

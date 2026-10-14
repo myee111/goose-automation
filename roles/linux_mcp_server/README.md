@@ -14,9 +14,10 @@ wires it into goose for **root and every interactive user** on the host.
    their own `~/.local/bin/linux-mcp-server`. uv manages its own Python, so
    RHEL 9's system Python is fine.
 4. Adds the `linux-tools` extension to each user's `~/.config/goose/config.yaml`
-   (created by the goose_redhat role) pointing at their own MCP server binary.
-   Configs with an unmanaged `extensions:` section are left untouched and
-   reported for manual merge.
+   (created by the goose_redhat role), merging it into the existing
+   `extensions:` section — the goose-redhat package ships one containing a
+   commented-out `linux-tools` example — or creating the section if absent.
+   Only an actively enabled extension counts as already-configured.
 5. Verifies the server runs for every target user and reports per-user results.
 
 Users already set up are skipped; re-runs only fill gaps.
