@@ -1,0 +1,205 @@
+---
+# Installs the RHEL goose agent (goose + goose-redhat) and makes it usable by
+# root and every interactive user on the host.
+#
+# Prerequisite (deliberately not managed here): the RHEL extensions
+# repository must already be enabled on the target, for example:
+#
+#   subscription-manager repos --enable=rhel-9-for-$(arch)-extensions-rpms
+#   subscription-manager repos --enable=rhel-10-for-$(arch)-extensions-rpms
+
+- name: Assert the target is a supported RHEL release on a supported architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'RedHat'
+      - ansible_facts['distribution_major_version'] | int in goose_redhat_supported_el_versions
+      - ansible_facts['architecture'] in goose_redhat_supported_arches
+    fail_msg: >-
+      {{ inventory_hostname }} reports {{ ansible_facts['distribution'] }}
+      {{ ansible_facts['distribution_version'] }} ({{ ansible_facts['architecture'] }}).
+      goose-redhat is only available for RHEL 9.8+ and 10.2+ on x86_64 or aarch64.
+    quiet: true
+
+- name: Install the goose agent and the goose-redhat backend integration
+  ansible.builtin.dnf:
+    name: "{{ goose_redhat_packages }}"
+    state: present
+
+- name: Look for the socket-activated goose-proxy unit shipped by the package
+  ansible.builtin.find:
+    paths: /usr/lib/systemd/system
+    patterns: goose-proxy.socket
+  register: goose_redhat_proxy_socket
+
+- name: Enable the goose-proxy socket so the proxy starts on demand
+  ansible.builtin.systemd_service:
+    name: goose-proxy.socket
+    enabled: true
+  when: goose_redhat_proxy_socket.matched | int > 0
+
+- name: Note the absence of a goose-proxy socket unit
+  ansible.builtin.debug:
+    msg: >-
+      No goose-proxy.socket unit in /usr/lib/systemd/system; leaving service
+      management to the package defaults.
+  when: goose_redhat_proxy_socket.matched | int == 0
+
+- name: Read the local user database
+  ansible.builtin.getent:
+    database: passwd
+    split: ":"
+
+- name: Validate explicitly configured users exist on the host
+  ansible.builtin.assert:
+    that:
+      - goose_redhat_seed_users | difference(getent_passwd.keys()) | length == 0
+    fail_msg: >-
+      These goose_redhat_seed_users were not found on {{ inventory_hostname }}:
+      {{ goose_redhat_seed_users | difference(getent_passwd.keys()) | list }}
+  when: goose_redhat_seed_users | length > 0
+
+- name: Build the list of users that should be able to run goose
+  ansible.builtin.set_fact:
+    goose_redhat_users: >-
+      {%- set users = [] -%}
+      {%- if goose_redhat_seed_users | length > 0 -%}
+        {%- for name in goose_redhat_seed_users -%}
+          {%- set info = getent_passwd[name] -%}
+          {%- set _ = users.append({'name': name, 'home': info[4]}) -%}
+        {%- endfor -%}
+      {%- else -%}
+        {%- for name, info in getent_passwd.items() -%}
+          {%- set uid = info[1] | int -%}
+          {%- if (uid == 0 and goose_redhat_seed_root)
+              or (uid >= goose_redhat_min_uid
+                  and info[5] in goose_redhat_allowed_shells) -%}
+            {%- set _ = users.append({'name': name, 'home': info[4]}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ users | sort(attribute='name') | unique }}
+
+- name: Check which target users already have the goose provider configured
+  ansible.builtin.command:
+    cmd: grep -ril {{ goose_redhat_provider_name | quote }} {{ item.home }}/{{ goose_redhat_config_dir }}
+  loop: "{{ goose_redhat_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false
+  register: goose_redhat_provider_checks
+
+- name: Collect users that already had the provider configured
+  ansible.builtin.set_fact:
+    goose_redhat_existing_users: >-
+      {{ goose_redhat_users
+         | zip(goose_redhat_provider_checks.results)
+         | selectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Collect users that still need the provider configured
+  ansible.builtin.set_fact:
+    goose_redhat_pending_users: >-
+      {{ goose_redhat_users
+         | zip(goose_redhat_provider_checks.results)
+         | rejectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Locate the per-user setup script the package installs in /etc/profile.d
+  ansible.builtin.find:
+    paths: /etc/profile.d
+    patterns: "{{ goose_redhat_profile_script_pattern }}"
+    file_type: file
+  register: goose_redhat_profile_scripts
+
+- name: Assert the package installed its per-user setup script
+  ansible.builtin.assert:
+    that:
+      - goose_redhat_profile_scripts.matched | int > 0
+    fail_msg: >-
+      No /etc/profile.d file matches {{ goose_redhat_profile_script_pattern }},
+      so the per-user goose provider cannot be seeded. Inspect `rpm -ql
+      goose-redhat` on {{ inventory_hostname }} and adjust
+      goose_redhat_profile_script_pattern if the package layout changed.
+  when: goose_redhat_pending_users | length > 0
+
+- name: Run the package's per-user setup script as each remaining user
+  ansible.builtin.command:
+    cmd: >-
+      bash -lc
+      {{ goose_redhat_profile_scripts.files
+         | map(attribute='path')
+         | map('regex_replace', '^', 'source ')
+         | join('; ') | quote }}
+  become: true
+  become_user: "{{ item.name }}"
+  become_flags: "-H -n"
+  environment:
+    HOME: "{{ item.home }}"
+  loop: "{{ goose_redhat_pending_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+
+- name: Confirm the provider now exists for each seeded user
+  ansible.builtin.command:
+    cmd: grep -ril {{ goose_redhat_provider_name | quote }} {{ item.home }}/{{ goose_redhat_config_dir }}
+  loop: "{{ goose_redhat_pending_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false
+  register: goose_redhat_seed_verification
+
+- name: Collect users whose provider config did not materialize
+  ansible.builtin.set_fact:
+    goose_redhat_unseeded_users: >-
+      {{ goose_redhat_pending_users
+         | zip(goose_redhat_seed_verification.results)
+         | rejectattr('1.rc', 'equalto', 0)
+         | map('first')
+         | list }}
+
+- name: Fail with guidance when the provider is still missing for some users
+  ansible.builtin.assert:
+    that:
+      - goose_redhat_unseeded_users | length == 0
+    fail_msg: >-
+      The {{ goose_redhat_provider_name }} provider is still missing for:
+      {{ goose_redhat_unseeded_users | map(attribute='name') | list }}.
+      A fresh login shell normally creates it from /etc/profile.d — ask these
+      users to log out and back in, or investigate with `rpm -ql goose-redhat`
+      on {{ inventory_hostname }}.
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: rpm
+
+- name: Assert the goose packages are installed
+  ansible.builtin.assert:
+    that:
+      - goose_redhat_packages | difference(ansible_facts.packages.keys()) | length == 0
+    fail_msg: >-
+      Expected packages missing on {{ inventory_hostname }}:
+      {{ goose_redhat_packages | difference(ansible_facts.packages.keys()) | list }}
+    quiet: true
+
+- name: Summarize goose availability on the host
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Installed packages:
+        {{ goose_redhat_packages
+           | zip(goose_redhat_packages
+                 | map("extract", ansible_facts.packages)
+                 | map(attribute="0.version"))
+           | map("join", "-")
+           | join(", ") }}
+      - >-
+        Provider configured during this run:
+        {{ goose_redhat_pending_users | map(attribute="name") | list }}
+      - >-
+        Provider already present:
+        {{ goose_redhat_existing_users | map(attribute="name") | list }}

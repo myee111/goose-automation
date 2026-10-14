@@ -1,0 +1,8 @@
+---
+# Inventory-wide overrides for the goose_redhat role. Defaults live in
+# roles/goose_redhat/defaults/main.yml; for example, to seed only specific
+# users instead of every interactive user on the host:
+#
+# goose_redhat_seed_users:
+#   - alice
+#   - bob

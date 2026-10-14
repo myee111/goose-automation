@@ -1,0 +1,28 @@
+---
+# Packages installed by the role. `goose` is the agent binary (installed
+# system-wide, so every user can run it); `goose-redhat` wires it to the
+# RHEL command-line assistant backend.
+goose_redhat_packages:
+  - goose
+  - goose-redhat
+
+# Also seed the provider config for root (uid 0).
+goose_redhat_seed_root: true
+
+# Interactive users are those with a UID >= this value and a login shell
+# listed in goose_redhat_allowed_shells. System accounts (nologin/false and
+# service UIDs below this value, other than root) are skipped.
+goose_redhat_min_uid: 1000
+
+goose_redhat_allowed_shells:
+  - /bin/bash
+  - /bin/sh
+  - /bin/zsh
+
+# Explicit list of users to seed. When non-empty, exactly these users receive
+# the goose provider config (they must exist on the host) and interactive
+# discovery is skipped.
+goose_redhat_seed_users: []
+
+# Glob used to find the package's per-user setup script in /etc/profile.d.
+goose_redhat_profile_script_pattern: "*goose*"

@@ -1,0 +1,14 @@
+---
+# Entry point: install goose-redhat and make it usable by root and every
+# interactive user on the target hosts.
+#
+#   ansible-playbook -i inventories/production/hosts.yml site.yml
+#
+# For rolling updates across a large fleet, add a `serial:` keyword here.
+
+- name: Install and configure goose-redhat for all users
+  hosts: goose_hosts
+  become: true
+
+  roles:
+    - role: goose_redhat

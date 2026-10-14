@@ -1,0 +1,15 @@
+---
+# Internal implementation details for the goose_redhat role. Tune behavior
+# through the variables in defaults/main.yml instead of overriding these.
+
+# RHEL minor streams that publish goose-redhat in their extensions repository.
+goose_redhat_supported_el_versions: [9, 10]
+
+# Architectures the RHEL extensions repository publishes goose for.
+goose_redhat_supported_arches: [x86_64, aarch64]
+
+# Per-user goose configuration directory, relative to each user's home.
+goose_redhat_config_dir: .config/goose
+
+# Provider name the goose-redhat package configures (RHEL Lightspeed backend).
+goose_redhat_provider_name: rhel_cla
